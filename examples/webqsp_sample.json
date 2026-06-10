@@ -1,0 +1,16 @@
+[
+  {
+    "id": "example-0",
+    "question": "what timezone is sweden",
+    "answer": ["Central European Time Zone"],
+    "q_entity": ["Sweden"],
+    "a_entity": ["Central European Time Zone"],
+    "reasoning_hops": 1,
+    "reasoning_paths": [
+      [
+        ["Sweden", "time zone", "Central European Time Zone"]
+      ]
+    ]
+  }
+]
+

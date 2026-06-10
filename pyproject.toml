@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grlprof"
+version = "0.1.0"
+description = "Structure-aware KG-RAG with edge-level retrieval, reasoning-path recovery, and soft-prompt graph adapters."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "GRLprof contributors" }
+]
+keywords = ["knowledge-graph", "rag", "kgqa", "llama", "soft-prompt"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["grlprof*", "model*", "train*", "utils*", "eval*"]
+namespaces = true
+

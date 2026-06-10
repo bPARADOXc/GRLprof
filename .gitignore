@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments and local config
+.env
+.venv/
+venv/
+env/
+.cache/
+
+# Large runtime artifacts
+checkpoints/**
+!checkpoints/README.md
+data/**
+!data/README.md
+llama/**
+retrieval/data_files/**
+retrieval/runs/**
+retrieval/*_*/
+reasoning/results/**
+reasoning/scored_triples/**
+wandb/
+
+# Model/data binaries
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.arrow
+*.pkl
+
+# Logs and generated reports
+*.log
+*_details.jsonl
+*_details_extracted.json
+eval_results/
+pipeline_logs/
+

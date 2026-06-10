@@ -1,0 +1,6 @@
+-r requirements/adapter.txt
+
+# Optional components:
+# - Retriever training/inference: pip install -r requirements/retriever.txt
+# - Path embedding pre-computation: pip install -r requirements/embedding.txt
+
