@@ -12,6 +12,7 @@ import traceback
 import os
 import warnings
 import logging
+import hashlib
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from io import StringIO
 from pathlib import Path
@@ -122,6 +123,39 @@ def parse_args():
     )
     parser.add_argument("--show_all_matched", action="store_true", help="Print all matched split/id entries.")
     parser.add_argument("--interactive", action="store_true", help="Force interactive mode.")
+    parser.add_argument(
+        "--open_fallback",
+        action="store_true",
+        help="If a question is not in the local dataset, run entity linking + Freebase retrieval + retriever scoring.",
+    )
+    parser.add_argument("--freebase_triples", type=Path, default=None, help="Freebase triples file for open-question fallback.")
+    parser.add_argument("--freebase_delimiter", default="\t")
+    parser.add_argument("--freebase_cvt_entities", type=Path, default=None)
+    parser.add_argument("--freebase_entity_names", type=Path, default=None)
+    parser.add_argument("--max_freebase_triples", type=int, default=-1)
+    parser.add_argument("--linker_checkpoint", type=Path, default=None)
+    parser.add_argument("--entity_catalog", type=Path, nargs="*", default=[])
+    parser.add_argument("--alias_file", type=Path, nargs="*", default=[])
+    parser.add_argument("--start_entities", default="", help="Comma-separated manual start entities for fallback.")
+    parser.add_argument("--question_entities", default="", help="Comma-separated manual question entities for fallback.")
+    parser.add_argument("--top_question_entities", type=int, default=5)
+    parser.add_argument("--top_start_entities", type=int, default=3)
+    parser.add_argument("--retriever_checkpoint", type=Path, default=None)
+    parser.add_argument("--skip_open_scoring", action="store_true", help="Skip retriever scoring in open fallback.")
+    parser.add_argument("--retriever_text_encoder", default="Alibaba-NLP/gte-large-en-v1.5")
+    parser.add_argument("--entity_identifiers", type=Path, default=None)
+    parser.add_argument("--retriever_top_k", type=int, default=500)
+    parser.add_argument("--max_physical_hop", type=int, default=0)
+    parser.add_argument("--relation_top_m", type=int, default=0)
+    parser.add_argument("--rough_max_triples", type=int, default=0)
+    parser.add_argument("--score_ratio", type=float, default=1.0 / 3.0)
+    parser.add_argument("--max_prefix_expansions", type=int, default=3)
+    parser.add_argument("--max_reasoning_paths", type=int, default=256)
+    parser.add_argument("--open_output_dir", type=Path, default=None, help="Optional directory to write open fallback retrieval JSON files.")
+    parser.add_argument("--path_embedding_type", default="Alibaba-NLP/gte-modernbert-base")
+    parser.add_argument("--path_embedding_model", default=None)
+    parser.add_argument("--path_embedding_batch_size", type=int, default=128)
+    parser.add_argument("--path_embedding_max_length", type=int, default=512)
     return parser.parse_args()
 
 
@@ -271,6 +305,13 @@ def resolve_data_dir(args) -> Path:
     return Path(args.data_dir).resolve() if args.data_dir else Path(get_dataset_config(args)["data_dir"]).resolve()
 
 
+def resolve_open_entity_identifiers(args):
+    if args.entity_identifiers is not None:
+        return args.entity_identifiers
+    default_path = ROOT / "retrieval" / "data_files" / args.dataset / "entity_identifiers.txt"
+    return default_path if default_path.exists() else None
+
+
 def split_emb_file(args, split: str) -> str:
     prefix = get_dataset_config(args)["embedding_prefix"]
     return f"{prefix}_{split}.pt"
@@ -368,6 +409,147 @@ def print_answers_only(answers):
             print(answer)
     else:
         print("answers:")
+
+
+_DYNAMIC_PATH_ENCODER_CACHE = {}
+
+
+def open_fallback_is_configured(args) -> bool:
+    return bool(args.open_fallback and args.freebase_triples is not None)
+
+
+def make_open_sample_id(question: str) -> str:
+    digest = hashlib.sha1(question.encode("utf-8")).hexdigest()[:12]
+    return f"open-{digest}"
+
+
+def build_open_pipeline_args(args, question: str):
+    if args.freebase_triples is None:
+        raise ValueError("--freebase_triples is required for --open_fallback.")
+    return argparse.Namespace(
+        question=question,
+        sample_id=make_open_sample_id(question),
+        freebase_triples=args.freebase_triples,
+        freebase_delimiter=args.freebase_delimiter,
+        freebase_cvt_entities=args.freebase_cvt_entities,
+        freebase_entity_names=args.freebase_entity_names,
+        max_freebase_triples=args.max_freebase_triples,
+        linker_checkpoint=args.linker_checkpoint,
+        entity_catalog=args.entity_catalog,
+        alias_file=args.alias_file,
+        linked_entities_json=None,
+        start_entities=args.start_entities,
+        question_entities=args.question_entities,
+        top_question_entities=args.top_question_entities,
+        top_start_entities=args.top_start_entities,
+        retriever_checkpoint=args.retriever_checkpoint,
+        skip_scoring=args.skip_open_scoring,
+        text_encoder=args.retriever_text_encoder,
+        entity_identifiers=resolve_open_entity_identifiers(args),
+        retriever_top_k=args.retriever_top_k,
+        max_physical_hop=args.max_physical_hop,
+        relation_top_m=args.relation_top_m,
+        rough_max_triples=args.rough_max_triples,
+        score_ratio=args.score_ratio,
+        max_prefix_expansions=args.max_prefix_expansions,
+        max_reasoning_paths=args.max_reasoning_paths,
+        device=args.device,
+        output_json=None,
+        output_pth=None,
+    )
+
+
+def write_open_result_if_requested(args, open_result: dict) -> None:
+    if args.open_output_dir is None:
+        return
+    args.open_output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.open_output_dir / f"{open_result['id']}.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(open_result, f, ensure_ascii=False, indent=2)
+    print(f"open_fallback_output: {out_path}")
+
+
+def run_open_question_retrieval(args, question: str) -> dict:
+    from grlprof.freebase_pipeline.infer_pipeline import run_pipeline as run_freebase_pipeline
+
+    print("Question not found in local dataset; running open Freebase retrieval fallback...")
+    open_args = build_open_pipeline_args(args, question)
+    open_result = run_freebase_pipeline(open_args)
+    write_open_result_if_requested(args, open_result)
+    return open_result
+
+
+def get_dynamic_path_encoder(args):
+    key = (
+        args.path_embedding_type,
+        args.path_embedding_model,
+        args.path_embedding_max_length,
+        args.device if args.device.startswith("cuda") and torch.cuda.is_available() else "cpu",
+    )
+    if key in _DYNAMIC_PATH_ENCODER_CACHE:
+        return _DYNAMIC_PATH_ENCODER_CACHE[key]
+
+    from scripts.process_webqsp_e5 import build_encoder, resolve_model_name_or_path
+
+    device = args.device if args.device.startswith("cuda") and torch.cuda.is_available() else "cpu"
+    model_name_or_path = resolve_model_name_or_path(args.path_embedding_type, args.path_embedding_model)
+    print(f"Loading dynamic path embedding model {model_name_or_path} on {device}...")
+    encoder = build_encoder(
+        args.path_embedding_type,
+        model_name_or_path,
+        device,
+        max_length=args.path_embedding_max_length,
+    )
+    _DYNAMIC_PATH_ENCODER_CACHE[key] = encoder
+    return encoder
+
+
+def encode_reasoning_paths_for_grlprof(reasoning_paths, args):
+    if not reasoning_paths:
+        return []
+    encoder = get_dynamic_path_encoder(args)
+    unique_entities = set()
+    unique_relations = set()
+    for path in reasoning_paths:
+        for triple in path:
+            if isinstance(triple, (list, tuple)) and len(triple) >= 3:
+                unique_entities.add(str(triple[0]))
+                unique_relations.add(str(triple[1]))
+                unique_entities.add(str(triple[2]))
+
+    sorted_entities = sorted(unique_entities)
+    sorted_relations = sorted(unique_relations)
+    entity_embs = encoder.encode(
+        [f"passage: entity: {entity}" for entity in sorted_entities],
+        batch_size=args.path_embedding_batch_size,
+    )
+    relation_embs = encoder.encode(
+        [f"passage: relation: {relation}" for relation in sorted_relations],
+        batch_size=args.path_embedding_batch_size,
+    )
+    entity_map = {entity: entity_embs[idx] for idx, entity in enumerate(sorted_entities)}
+    relation_map = {relation: relation_embs[idx] for idx, relation in enumerate(sorted_relations)}
+
+    triple_cache = {}
+    item_paths_list = []
+    for path in reasoning_paths:
+        path_triples = []
+        for triple in path:
+            if not isinstance(triple, (list, tuple)) or len(triple) < 3:
+                continue
+            h, r, t = str(triple[0]), str(triple[1]), str(triple[2])
+            if h not in entity_map or r not in relation_map or t not in entity_map:
+                continue
+            triple_key = (h, r, t)
+            if triple_key not in triple_cache:
+                triple_cache[triple_key] = torch.stack(
+                    [entity_map[h], relation_map[r], entity_map[t]],
+                    dim=0,
+                )
+            path_triples.append(triple_cache[triple_key])
+        if path_triples:
+            item_paths_list.append(path_triples)
+    return item_paths_list
 
 
 def tokenize_generation_prompt(prompt: str, tokenizer, runtime_device: torch.device, max_input_tokens: int):
@@ -504,10 +686,24 @@ def run_one_question(args, cfg, tokenizer, model, question: str):
     data_dir = resolve_data_dir(args)
 
     match, all_matches = find_question_sample(question, data_dir)
+    open_result = None
     if match is None:
-        raise ValueError(f"Question not found in {data_dir}: {question}")
-
-    split_name, sample = match
+        if not open_fallback_is_configured(args):
+            raise ValueError(
+                f"Question not found in {data_dir}: {question}. "
+                "Enable --open_fallback and provide --freebase_triples to run open-question retrieval."
+            )
+        open_result = run_open_question_retrieval(args, question)
+        split_name = "open_fallback"
+        sample = {
+            "id": open_result["id"],
+            "question": open_result.get("question", question),
+            "answer": [],
+            "reasoning_paths": open_result.get("reasoning_paths") or [],
+        }
+        all_matches = []
+    else:
+        split_name, sample = match
     reasoning_paths = sample.get("reasoning_paths") or []
     chosen_indices = select_front_path_indices(reasoning_paths, args.max_paths)
     chosen_paths = [reasoning_paths[idx] for idx in chosen_indices]
@@ -520,6 +716,11 @@ def run_one_question(args, cfg, tokenizer, model, question: str):
         print(f"sample_id: {sample.get('id')}")
         print(f"split: {split_name}")
         print(f"total_reasoning_paths: {len(reasoning_paths)}")
+        if open_result is not None:
+            print("retrieval_mode: open_fallback")
+            print(f"linked_entities: {json.dumps(open_result.get('linked_entities', []), ensure_ascii=False)}")
+            rough = open_result.get("rough_subgraph", {})
+            print(f"rough_subgraph_triples: {rough.get('num_triples', 0)}")
         if len(all_matches) > 1:
             print("matched_entries:")
             for s, it in all_matches:
@@ -533,11 +734,14 @@ def run_one_question(args, cfg, tokenizer, model, question: str):
         runtime_device = model.get_input_embeddings().weight.device
     model_dtype = next(model.parameters()).dtype
 
-    emb_data = load_split_emb_data(args, data_dir, split_name)
     sample_id = sample.get("id")
-    sample_paths_emb = emb_data.get(sample_id)
-    if sample_paths_emb is None:
-        raise KeyError(f"Missing embedding for sample id={sample_id} in split={split_name}")
+    if open_result is None:
+        emb_data = load_split_emb_data(args, data_dir, split_name)
+        sample_paths_emb = emb_data.get(sample_id)
+        if sample_paths_emb is None:
+            raise KeyError(f"Missing embedding for sample id={sample_id} in split={split_name}")
+    else:
+        sample_paths_emb = encode_reasoning_paths_for_grlprof(reasoning_paths, args)
     if not isinstance(sample_paths_emb, list):
         raise TypeError(f"Invalid embedding layout for sample id={sample_id}: {type(sample_paths_emb)}")
     invalid_indices = [idx for idx in chosen_indices if idx < 0 or idx >= len(sample_paths_emb)]
@@ -587,7 +791,8 @@ def run_one_question(args, cfg, tokenizer, model, question: str):
         print(f"prediction_raw: {generated_text}")
         print(f"prediction_json: {normalized['normalized_json']}")
         print(f"prediction_answers: {json.dumps(normalized['answers'], ensure_ascii=False)}")
-        print(f"gold_answers: {json.dumps(normalize_answer_list(sample.get('answer', [])), ensure_ascii=False)}")
+        if open_result is None:
+            print(f"gold_answers: {json.dumps(normalize_answer_list(sample.get('answer', [])), ensure_ascii=False)}")
     else:
         print_selected_paths(chosen_paths)
         print_answers_only(normalized["answers"])
@@ -625,7 +830,7 @@ def get_interactive_help_text():
         "  /showall on|off        是否显示详细信息",
         "  /help                  帮助",
         "  /exit                  退出CLI",
-        "其他输入会被当作当前数据集的问题。",
+        "其他输入会被当作当前数据集的问题；若启用 --open_fallback 且未命中数据集，则走 Freebase 检索推理。",
     ])
 
 def print_interactive_help():
@@ -685,6 +890,7 @@ def run_interactive_tui(args):
         return (
             f" KGQA CLI | 数据集={args.dataset} | 模型={args.model} "
             f"| max_paths={args.max_paths} | showall={args.show_all_matched} "
+            f"| open_fallback={open_fallback_is_configured(args)} "
             f"| 状态={state} | Ctrl-Q 退出 "
         )
 

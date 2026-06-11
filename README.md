@@ -212,6 +212,43 @@ export GRLPROF_WEBQSP_LLAMA3_ADAPTER=checkpoints/webqsp/grlprof-llama3
 python eval/webqsp_cli_infer.py --dataset webqsp --model llama3 --interactive
 ```
 
+Open-question inference can be enabled for questions not found in the local
+dataset cache. This runs entity prediction, Freebase rough subgraph sampling,
+triple scoring, path recovery, dynamic path embedding, and then the GRLprof
+adapter:
+
+```bash
+export GRLPROF_WEBQSP_LLAMA3_ADAPTER=checkpoints/webqsp/grlprof-llama3
+FREEBASE_TRIPLES=/path/to/freebase.tsv \
+LINKER_CHECKPOINT=checkpoints/entity_linker/webqsp_roberta/best \
+RETRIEVER_CHECKPOINT=checkpoints/retriever/webqsp/cpt.pth \
+QUESTION="where was Barack Obama born" \
+./scripts/run_open_kgqa_cli.sh --show_all_matched
+```
+
+For debugging the retrieval bridge without loading the GRLprof adapter, run:
+
+```bash
+python scripts/run_freebase_pipeline.py \
+  --question "where was Barack Obama born" \
+  --start-entities /m/02mjmr \
+  --question-entities /m/02mjmr \
+  --freebase-triples /path/to/freebase.tsv \
+  --skip-scoring \
+  --output-json outputs/freebase_pipeline_obama.json
+```
+
+Entity linker training entrypoints are:
+
+```bash
+python scripts/train_elq_start_linker.py \
+  --train-file data/webqsp_may_merged/train.json \
+  --valid-file data/webqsp_may_merged/validation.json \
+  --alias-file data/aliases/WQSP_aliase_data.json \
+  --model-name-or-path roberta-base \
+  --output-dir checkpoints/entity_linker/webqsp_roberta
+```
+
 ## Release Notes
 
 - The repository contains code and small config files only.

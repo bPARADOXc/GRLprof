@@ -41,4 +41,4 @@ wandb/
 *_details_extracted.json
 eval_results/
 pipeline_logs/
-
+outputs/
