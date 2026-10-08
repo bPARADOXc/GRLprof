@@ -4,7 +4,7 @@ set -euo pipefail
 # End-to-end QA pipeline:
 #   1. train with scripts/train_deepspeed.sh
 #   2. run checkpoint inference with eval/eval_webqsp_checkpoints.py
-#   3. convert *_details.jsonl with checkpoints/extract_fields_to_json.py
+#   3. convert *_details.jsonl with tools/extract_fields_to_json.py
 #   4. score extracted JSON files with eval.py
 #
 # Positional args:
@@ -16,6 +16,7 @@ set -euo pipefail
 #
 # Common overrides:
 #   OUTPUT_BASE=./checkpoints  # weights go under ${OUTPUT_BASE}/${DATASET}
+#   RUN_PREFLIGHT=0|1          # validate merged JSON/path embeddings first
 #   RUN_TRAIN=0|1 RUN_INFER=0|1 RUN_EXTRACT=0|1 RUN_EVAL_PY=0|1
 #   EVAL_SPLITS="validation test"     # default: all checkpoints validation, final test
 #   EVAL_CHECKPOINTS="final 300"      # optional, otherwise eval script discovers all
@@ -38,6 +39,7 @@ cd "${ROOT_DIR}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-./scripts/train_deepspeed.sh}"
+PREFLIGHT_SCRIPT="${PREFLIGHT_SCRIPT:-scripts/preflight_core_pipeline.py}"
 INFER_SCRIPT="${INFER_SCRIPT:-eval/eval_webqsp_checkpoints.py}"
 EXTRACT_SCRIPT="${EXTRACT_SCRIPT:-tools/extract_fields_to_json.py}"
 EVAL_PY_SCRIPT="${EVAL_PY_SCRIPT:-eval.py}"
@@ -57,6 +59,8 @@ RUN_TRAIN="${RUN_TRAIN:-1}"
 RUN_INFER="${RUN_INFER:-1}"
 RUN_EXTRACT="${RUN_EXTRACT:-1}"
 RUN_EVAL_PY="${RUN_EVAL_PY:-1}"
+RUN_PREFLIGHT="${RUN_PREFLIGHT:-1}"
+PREFLIGHT_SKIP_EMBEDDING_CONTENTS="${PREFLIGHT_SKIP_EMBEDDING_CONTENTS:-0}"
 
 EVAL_SPLITS="${EVAL_SPLITS:-validation test}"
 EVAL_DEVICE="${EVAL_DEVICE:-cuda}"
@@ -69,11 +73,12 @@ EVAL_TORCH_DTYPE="${EVAL_TORCH_DTYPE:-auto}"
 EVAL_DEVICE_MAP="${EVAL_DEVICE_MAP:-}"
 EVAL_CUDA_VISIBLE_DEVICES="${EVAL_CUDA_VISIBLE_DEVICES:-}"
 NO_GRAPH_TOKEN="${NO_GRAPH_TOKEN:-0}"
-CACHE_DIR="${CACHE_DIR:-../../checkpoint}"
+CACHE_DIR="${CACHE_DIR:-./checkpoints/hf_cache}"
 
 EXTRACT_PATTERN="${EXTRACT_PATTERN:-*_details.jsonl}"
 FORCE_EXTRACT="${FORCE_EXTRACT:-0}"
 EVAL_PY_SPLITS="${EVAL_PY_SPLITS:-${EVAL_SPLITS}}"
+EVAL_ALIAS_DIR="${EVAL_ALIAS_DIR:-}"
 
 timestamp() {
   date "+%F %T"
@@ -166,6 +171,19 @@ mkdir -p "${PIPELINE_LOG_DIR}"
 log "ROOT_DIR=${ROOT_DIR}" | tee -a "${PIPELINE_LOG_DIR}/pipeline.log"
 log "MODEL=${MODEL}, DATASET=${DATASET}, DATA_DIR=${DATA_DIR_ABS}, EMB=${EMB}" | tee -a "${PIPELINE_LOG_DIR}/pipeline.log"
 log "OUTPUT_ROOT=${OUTPUT_ROOT}, PIPELINE_LOG_DIR=${PIPELINE_LOG_DIR}" | tee -a "${PIPELINE_LOG_DIR}/pipeline.log"
+
+if [ "${RUN_PREFLIGHT}" = "1" ]; then
+  preflight_cmd=(
+    "${PYTHON_BIN}" "${PREFLIGHT_SCRIPT}"
+    --dataset "${DATASET}"
+    --data-dir "${DATA_DIR_ABS}"
+    --embedding-type "${EMB}"
+  )
+  if [ "${PREFLIGHT_SKIP_EMBEDDING_CONTENTS}" = "1" ]; then
+    preflight_cmd+=(--skip-embedding-contents)
+  fi
+  run_logged "${PIPELINE_LOG_DIR}/preflight.log" "${preflight_cmd[@]}"
+fi
 
 if [ "${RUN_TRAIN}" = "1" ]; then
   export LLAGA_OUTPUT_ROOT="${OUTPUT_ROOT}"
@@ -292,12 +310,17 @@ if [ "${RUN_EVAL_PY}" = "1" ]; then
   eval_py_log="${PIPELINE_LOG_DIR}/eval_py.log"
   for split in ${EVAL_PY_SPLITS}; do
     split="$(canonical_split "${split}")"
-    run_logged "${eval_py_log}" \
-      "${PYTHON_BIN}" "${EVAL_PY_SCRIPT}" \
-      --dataset "${DATASET}" \
-      --checkpoint_eval_dir "${RESULTS_DIR}" \
-      --split "${split}" \
+    eval_py_cmd=(
+      "${PYTHON_BIN}" "${EVAL_PY_SCRIPT}"
+      --dataset "${DATASET}"
+      --checkpoint_eval_dir "${RESULTS_DIR}"
+      --split "${split}"
       --summary_file "${RESULTS_DIR}/eval_py_summary_${split}.json"
+    )
+    if [ -n "${EVAL_ALIAS_DIR}" ]; then
+      eval_py_cmd+=(--alias_dir "${EVAL_ALIAS_DIR}")
+    fi
+    run_logged "${eval_py_log}" "${eval_py_cmd[@]}"
   done
 fi
 

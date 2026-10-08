@@ -159,6 +159,27 @@ class LengthGroupedSampler(Sampler):
 
 
 class LLaGATrainer(Trainer):
+    def _ensure_optimizer_mode_hooks(self):
+        """Bridge Accelerate 0.32's unconditional optimizer.train/eval calls.
+
+        Ordinary AdamW and DeepSpeed ZeRO optimizers have no mode hooks;
+        newer Accelerate versions already treat these as no-ops. Keep actual
+        hooks intact for optimizers (e.g. schedule-free) that implement them.
+        """
+        from accelerate.optimizer import AcceleratedOptimizer
+        if isinstance(self.optimizer, AcceleratedOptimizer):
+            for mode in ('train', 'eval'):
+                if not hasattr(self.optimizer.optimizer, mode):
+                    setattr(self.optimizer, mode, lambda: None)
+
+    def training_step(self, model, inputs, *args, **kwargs):
+        self._ensure_optimizer_mode_hooks()
+        return super().training_step(model, inputs, *args, **kwargs)
+
+    def evaluation_loop(self, *args, **kwargs):
+        self._ensure_optimizer_mode_hooks()
+        return super().evaluation_loop(*args, **kwargs)
+
     # 自定义 Trainer 类，继承自 HuggingFace 的 Trainer。
     # 主要修改了数据采样逻辑 (Sampler) 和模型保存逻辑 (Checkpoint Saving)。
 

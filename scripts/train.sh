@@ -11,7 +11,10 @@ train_entry=${LLAGA_TRAIN_ENTRY:-train/train_mem.py}
 dataloader_workers=${LLAGA_DATALOADER_NUM_WORKERS:-8}
 resume_mm_projector_from=${LLAGA_RESUME_MM_PROJECTOR_FROM:-}
 cache_dir=${LLAGA_CACHE_DIR:-./checkpoints/hf_cache}
+triton_cache_dir=${TRITON_CACHE_DIR:-${cache_dir%/}/triton}
 output_root=${LLAGA_OUTPUT_ROOT:-./checkpoints}
+
+export TRITON_CACHE_DIR="${triton_cache_dir}"
 
 model=${1:-"llama"}
 task=${2:-"QA"}
@@ -135,6 +138,7 @@ echo "PREFIX:  ${prefix}"
 echo "PRETRAINED_EMBEDDING_TYPE: ${emb}"
 echo "EMBEDDING_LABEL: ${emb_label}"
 echo "DATA_DIR: ${data_dir}"
+echo "TRITON_CACHE_DIR: ${TRITON_CACHE_DIR}"
 
 if [ "${report_to}" = "wandb" ] && command -v wandb >/dev/null 2>&1; then
   wandb online
@@ -190,4 +194,5 @@ if [ "${LLAGA_DRY_RUN:-0}" = "1" ]; then
   echo "LLAGA_DRY_RUN=1, command not executed."
   exit 0
 fi
+mkdir -p "${TRITON_CACHE_DIR}"
 "${cmd[@]}"

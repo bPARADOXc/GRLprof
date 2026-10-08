@@ -1,17 +1,18 @@
 # Method
 
-GRLprof is a structure-aware KG-RAG framework for complex KGQA. The main line is:
+GRLprof is a structure-aware retrieval and soft-prompt framework for complex KGQA. The main line is:
 
 ```text
-question processing -> compact subgraph retrieval -> structured knowledge encoding
--> local small-model reasoning
+prepared question/topic entities/candidate graph -> edge-level retrieval
+-> reasoning-path recovery -> structured path encoding
+-> local Llama reasoning
 ```
 
-## 1. Question Processing and Candidate Subgraph Construction
+## System Boundary
 
-Given a natural-language question, the system first identifies anchor entities in the knowledge graph and estimates the required reasoning hop count. It then expands from anchor entities with a maximum hop budget and fan-out cap. This bounded expansion keeps likely evidence in the candidate set while avoiding full BFS neighbor explosion.
+The thesis experiments use the prepared WebQSP and CWQ records as the system input. Each record already supplies the natural-language question, topic entities, answer supervision, and a candidate knowledge graph. Entity linking and online candidate-subgraph acquisition are therefore outside the evaluated method. Their implementation remains in the repository as optional code, but the core training and inference entrypoints do not call it.
 
-## 2. Structure-Aware Edge-Level Retrieval
+## 1. Edge-Level Retrieval
 
 The retriever scores candidate triples instead of enumerating and scoring complete paths with a large language model.
 
@@ -22,17 +23,17 @@ For each triple `(h, r, t)`, the model builds:
 
 A lightweight MLP scores candidate edges in parallel. This is cheaper than path-level LLM scoring and better suited to local deployment.
 
-## 3. Budgeted Subgraph Selection and Post-Processing
+## 2. Retrieved Triple Selection and Post-Processing
 
-High-scoring edges are not used as a raw top-k bag. The system checks whether evidence edges stay connected to question anchors, supplements bridge edges when needed, and removes duplicate or redundant edges. The result is a compact evidence subgraph with a controlled size and more coherent structure.
+The retriever ranks candidate triples. The inference artifact retains the highest-scoring triples, and path recovery applies the configured relative score threshold before expansion. Duplicate triples are removed before path construction.
 
-## 4. High-Score Path Recovery
+## 3. High-Score Path Recovery
 
-The compact subgraph is converted into reasoning paths. Starting from high-score triples, the system backtracks toward question entities, joins prefix paths, and filters by path length, edge score, connectivity, and overlap. It removes duplicate paths, reverse duplicates, strict prefixes, and highly overlapping paths.
+The retrieved triples are converted into reasoning paths. Starting from a high-score seed triple, the system backtracks over the prepared candidate graph toward a topic entity, keeps shortest admissible prefixes, and removes duplicate, reverse-conflicting, and strict-prefix paths.
 
 Each sample then contains the question, answers, question entities, answer entities, reasoning hop count, and a set of reasoning paths.
 
-## 5. Path Graph Vectorization
+## 4. Path Graph Vectorization
 
 Recovered paths are still discrete symbols. GRLprof encodes entity names and relation names into vectors, while preserving triple role order and path order:
 
@@ -45,7 +46,7 @@ Recovered paths are still discrete symbols. GRLprof encodes entity names and rel
 
 This avoids collapsing the path into a simple average vector and keeps graph structure available to the adapter.
 
-## 6. Knowledge Adapter and Soft-Prompt Injection
+## 5. Knowledge Adapter and Soft-Prompt Injection
 
 The knowledge adapter fuses textual semantics, topology, and directional information, then projects the result into the frozen language model embedding space. Generation uses:
 
@@ -55,14 +56,14 @@ soft prompt + hard instruction prompt + original question
 
 The soft prompt carries KG evidence. The hard prompt specifies the task and output format. The original question remains visible to the language model.
 
-## 7. Training and Inference
+## 6. Training and Inference
 
 Training has two stages:
 
 1. Retriever training: weak supervision marks edges on question-to-answer paths as positives and other candidate edges as negatives.
 2. Adapter training: retrieved paths are encoded as soft prompts, and the frozen LLM is optimized through answer generation loss by updating only the adapter-side parameters.
 
-At inference time there are no labels. The system performs entity recognition, candidate subgraph expansion, edge scoring, path recovery, soft-prompt construction, and answer generation.
+At inference time there are no answer labels. For each prepared benchmark sample, the system performs edge scoring, path recovery, soft-prompt construction, and answer generation. It consumes the topic entities and candidate graph supplied by the dataset rather than invoking the optional entity-linking/Freebase front end.
 
 ## Difference from Text RAG
 
@@ -75,9 +76,8 @@ question -> text retrieval -> concatenate passages -> LLM generation
 GRLprof:
 
 ```text
-question -> KG subgraph retrieval -> path recovery -> structural encoding
--> soft-prompt injection -> local LLM generation
+prepared KGQA sample -> edge-level retrieval -> path recovery
+-> structural encoding -> soft-prompt injection -> local LLM generation
 ```
 
 The system uses entities, relations, direction, hop count, and path structure instead of only retrieved text.
-

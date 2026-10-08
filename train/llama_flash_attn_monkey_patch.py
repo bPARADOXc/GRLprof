@@ -103,6 +103,13 @@ def _prepare_decoder_attention_mask(
 
 
 def replace_llama_attn_with_flash_attn():
+    if not hasattr(transformers.models.llama.modeling_llama.LlamaModel,
+                   '_prepare_decoder_attention_mask'):
+        # Modern Transformers uses Cache/cache_position and precomputed RoPE.
+        # The 4.31 monkey patch cannot implement that interface. Keep the
+        # native attention implementation (SDPA when available) instead.
+        print('Using native Transformers Llama attention; legacy FlashAttention patch is not applicable.')
+        return
     cuda_major, cuda_minor = torch.cuda.get_device_capability()
     if cuda_major < 8:
         warnings.warn(

@@ -1,6 +1,7 @@
 import argparse
 import importlib.util
 import json
+import os
 import re
 from pathlib import Path
 # python eval.py --dataset webqsp --input_file checkpoints/webqsp/experiment/eval_results/webqsp_checkpoint_eval --quiet
@@ -21,19 +22,30 @@ def _mean(values):
     return float(sum(values) / len(values)) if values else 0.0
 
 
-def _alias_file_path(filename):
-    candidates = [
+def _alias_file_path(filename, alias_dir=None):
+    candidates = []
+    if alias_dir:
+        candidates.append(Path(alias_dir).expanduser() / filename)
+    env_alias_dir = os.environ.get("GRLPROF_ALIAS_DIR")
+    if env_alias_dir:
+        candidates.append(Path(env_alias_dir).expanduser() / filename)
+    candidates.extend([
+        Path(__file__).resolve().parent / "data" / "aliases" / filename,
         Path(__file__).resolve().parent / "cope_alias" / filename,
         Path.cwd() / "cope_alias" / filename,
         Path("../../VoG/cope_alias") / filename,
-    ]
+    ])
     for path in candidates:
         if path.is_file():
             return path
-    return candidates[0]
+    searched = "\n  ".join(str(path) for path in candidates)
+    raise FileNotFoundError(
+        f"Missing evaluation alias resource {filename}. Searched:\n  {searched}\n"
+        "Set --alias_dir or GRLPROF_ALIAS_DIR to the original cope_alias directory."
+    )
 
 
-def _load_alias_data(dataset):
+def _load_alias_data(dataset, alias_dir=None):
     type_field = ''
     aname_dict = {}
     alias_dict = {}
@@ -41,11 +53,11 @@ def _load_alias_data(dataset):
 
     if dataset == 'cwq':
         type_field = 'compositionality_type'
-        with open(_alias_file_path('cwq_aname_dict.json'), 'r', encoding='utf-8') as f:
+        with open(_alias_file_path('cwq_aname_dict.json', alias_dir), 'r', encoding='utf-8') as f:
             aname_dict = json.load(f)
-        with open(_alias_file_path('CWQ_aliase_data31158.json'), 'r', encoding='utf-8') as f:
+        with open(_alias_file_path('CWQ_aliase_data31158.json', alias_dir), 'r', encoding='utf-8') as f:
             alias_dict = json.load(f)
-        with open(_alias_file_path('ComplexWebQuestions_test_wans.json'), 'r', encoding='utf-8') as f:
+        with open(_alias_file_path('ComplexWebQuestions_test_wans.json', alias_dir), 'r', encoding='utf-8') as f:
             q_all_list = json.load(f)
             for q_item in q_all_list:
                 ans_list = []
@@ -60,7 +72,7 @@ def _load_alias_data(dataset):
                 add_ans_alias_dict[q_item['question']] = ans_list
 
     elif dataset == 'webqsp':
-        alias_path = _alias_file_path('WQSP_aliase_data.json')
+        alias_path = _alias_file_path('WQSP_aliase_data.json', alias_dir)
         if alias_path.is_file():
             with open(alias_path, 'r', encoding='utf-8') as f:
                 alias_dict = json.load(f)
@@ -227,18 +239,18 @@ def _select_batch_files(eval_dir, split, json_file=None, include_backups=False):
     return sorted(files, key=_checkpoint_sort_key)
 
 
-def evaluate_file(dataset, input_file, limit=None, quiet=False, print_summary=True):
+def evaluate_file(dataset, input_file, limit=None, quiet=False, print_summary=True, alias_dir=None):
     checkpoint_details_mode = eval_utils.is_existing_json_file(input_file)
 
     if checkpoint_details_mode:
         ground_truth_datas = None
         question_string = "question"
         output_datas = eval_utils.read_checkpoint_eval_details(input_file)
-        loaded_type_field, aname_dict, alias_dict, add_ans_alias_dict = _load_alias_data(dataset)
+        loaded_type_field, aname_dict, alias_dict, add_ans_alias_dict = _load_alias_data(dataset, alias_dir)
         type_field = loaded_type_field if output_datas and loaded_type_field in output_datas[0] else ''
     else:
         ground_truth_datas, question_string, output_datas = eval_utils.prepare_dataset_for_eval(dataset, input_file)
-        type_field, aname_dict, alias_dict, add_ans_alias_dict = _load_alias_data(dataset)
+        type_field, aname_dict, alias_dict, add_ans_alias_dict = _load_alias_data(dataset, alias_dir)
 
     if limit is not None:
         output_datas = output_datas[:limit]
@@ -453,6 +465,7 @@ def run_batch(args):
             limit=args.limit,
             quiet=not args.print_details,
             print_summary=False,
+            alias_dir=args.alias_dir,
         )
         metrics_list.append(metrics)
 
@@ -485,6 +498,12 @@ def main():
     parser.add_argument("--summary_file", "--summary-file", default=None, help="Where to write batch metrics json.")
     parser.add_argument("--no_summary_file", "--no-summary-file", action="store_true", help="Do not write batch metrics json.")
     parser.add_argument("--print_details", "--print-details", action="store_true", help="Print per-question details in batch mode.")
+    parser.add_argument(
+        "--alias_dir",
+        "--alias-dir",
+        default=None,
+        help="Directory containing the original WebQSP/CWQ evaluation alias JSON files.",
+    )
 
     args = parser.parse_args()
 
@@ -493,7 +512,14 @@ def main():
         return
 
     input_file = args.input_file or args.output_file
-    evaluate_file(args.dataset, input_file, limit=args.limit, quiet=args.quiet, print_summary=True)
+    evaluate_file(
+        args.dataset,
+        input_file,
+        limit=args.limit,
+        quiet=args.quiet,
+        print_summary=True,
+        alias_dir=args.alias_dir,
+    )
 
 
 if __name__ == '__main__':

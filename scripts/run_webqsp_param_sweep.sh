@@ -6,6 +6,7 @@ cd "${ROOT_DIR}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-./scripts/train_deepspeed.sh}"
+PREFLIGHT_SCRIPT="${PREFLIGHT_SCRIPT:-scripts/preflight_core_pipeline.py}"
 
 MODEL="${MODEL:-llama}"
 TASK="${TASK:-QA}"
@@ -28,6 +29,9 @@ PREFIX="grlprof-llama-2-7b-chat-${EMB_LABEL}-${DATASET}-projector"
 MODEL_BASE="${MODEL_BASE:-./llama/llama-2-7b-chat-hf}"
 CONV_MODE="${CONV_MODE:-llaga_llama_2}"
 CACHE_DIR="${CACHE_DIR:-./checkpoints/hf_cache}"
+DATA_DIR="${DATA_DIR:-data/${DATASET}_may_merged}"
+EXTRACT_SCRIPT="${EXTRACT_SCRIPT:-tools/extract_fields_to_json.py}"
+SEMANTIC_SCRIPT="${SEMANTIC_SCRIPT:-tools/semantic_match_with_qwen.py}"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2}"
 export LLAGA_SKIP_INITIAL_EVAL="${LLAGA_SKIP_INITIAL_EVAL:-1}"
@@ -57,6 +61,8 @@ FORCE_EVAL="${FORCE_EVAL:-0}"
 FORCE_EXTRACT="${FORCE_EXTRACT:-0}"
 FORCE_QWEN="${FORCE_QWEN:-0}"
 MAX_EXPERIMENTS="${MAX_EXPERIMENTS:-3}"
+RUN_PREFLIGHT="${RUN_PREFLIGHT:-1}"
+PREFLIGHT_SKIP_EMBEDDING_CONTENTS="${PREFLIGHT_SKIP_EMBEDDING_CONTENTS:-0}"
 
 LOG_DIR="${ROOT_DIR}/checkpoints/webqsp/_batch_logs"
 mkdir -p "${LOG_DIR}"
@@ -143,7 +149,7 @@ train_one() {
       LLAGA_EPOCHS="${epochs}" \
       LLAGA_WEIGHT_DECAY="${weight_decay}" \
       LLAGA_OUTPUT_SUFFIX="${suffix}" \
-      "${TRAIN_SCRIPT}" "${MODEL}" "${TASK}" "${DATASET}" "${BATCH_SIZE}" "${EMB}"
+      "${TRAIN_SCRIPT}" "${MODEL}" "${TASK}" "${DATASET}" "${BATCH_SIZE}" "${EMB}" "${DATA_DIR}"
 }
 
 
@@ -160,6 +166,8 @@ eval_one() {
   read -r -a eval_splits_array <<< "${EVAL_SPLITS}"
   local cmd=(
     "${PYTHON_BIN}" "eval/eval_webqsp_checkpoints.py"
+    --dataset "${DATASET}"
+    --data_dir "${DATA_DIR}"
     --output_dir "${output_dir}"
     --model_base "${MODEL_BASE}"
     --conv_mode "${CONV_MODE}"
@@ -198,7 +206,7 @@ extract_and_semantic_one() {
       log "Skip extraction for ${split}: ${extracted_json} already exists." | tee -a "${log_file}"
     else
       run_logged "${log_file}" \
-        "${PYTHON_BIN}" "checkpoints/webqsp/extract_fields_to_json.py" \
+        "${PYTHON_BIN}" "${EXTRACT_SCRIPT}" \
         "${details_jsonl}" \
         --output "${extracted_json}"
     fi
@@ -213,7 +221,7 @@ extract_and_semantic_one() {
     fi
 
     semantic_cmd=(
-      "${PYTHON_BIN}" "checkpoints/webqsp/semantic_match_with_qwen.py"
+      "${PYTHON_BIN}" "${SEMANTIC_SCRIPT}"
       "${extracted_json}"
       --proxy-mode "${QWEN_PROXY_MODE}"
       --batch-size "${QWEN_BATCH_SIZE}"
@@ -233,6 +241,19 @@ main() {
   if [ "${RUN_QWEN_SEMANTIC}" = "1" ] && [ -z "${DASHSCOPE_API_KEY:-${BAILIAN_API_KEY:-}}" ]; then
     echo "RUN_QWEN_SEMANTIC=1 but DASHSCOPE_API_KEY / BAILIAN_API_KEY is not set." >&2
     exit 1
+  fi
+
+  if [ "${RUN_PREFLIGHT}" = "1" ]; then
+    local preflight_cmd=(
+      "${PYTHON_BIN}" "${PREFLIGHT_SCRIPT}"
+      --dataset "${DATASET}"
+      --data-dir "${DATA_DIR}"
+      --embedding-type "${EMB}"
+    )
+    if [ "${PREFLIGHT_SKIP_EMBEDDING_CONTENTS}" = "1" ]; then
+      preflight_cmd+=(--skip-embedding-contents)
+    fi
+    "${preflight_cmd[@]}"
   fi
 
   local index=0

@@ -1,5 +1,9 @@
 # Stage 1: Retrieval
 
+For the current verified GRLprof configuration and setup commands, start with
+the repository-root [README](../README.md). The installation commands below
+record the historical stage-specific setup, not the latest smoke-tested environment.
+
 ## Table of Contents
 
 - [Supported Datasets](#supported-datasets)

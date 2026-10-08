@@ -21,5 +21,5 @@ python eval/eval_pretrain.py \
 --sample_neighbor_size ${sample_size} \
 --answers_file ${output_path} \
 --task ${task} \
---cache_dir ../../checkpoint \
+--cache_dir ./checkpoints/hf_cache \
 --template ${template}

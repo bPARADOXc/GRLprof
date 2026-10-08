@@ -12,10 +12,14 @@ cd "${ROOT_DIR}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-./scripts/train_deepspeed.sh}"
+PREFLIGHT_SCRIPT="${PREFLIGHT_SCRIPT:-scripts/preflight_core_pipeline.py}"
+EXTRACT_SCRIPT="${EXTRACT_SCRIPT:-tools/extract_fields_to_json.py}"
+SEMANTIC_SCRIPT="${SEMANTIC_SCRIPT:-tools/semantic_match_with_qwen.py}"
 
 MODEL="${MODEL:-llama3}"
 TASK="${TASK:-QA}"
 DATASET="${DATASET:-webqsp}"
+DATA_DIR="${DATA_DIR:-data/${DATASET}_may_merged}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 EMB="${EMB:-E5-base}"
 case "${EMB}" in
@@ -36,6 +40,8 @@ RUN_TRAIN="${RUN_TRAIN:-1}"
 RUN_EVAL="${RUN_EVAL:-1}"
 RUN_EXTRACT="${RUN_EXTRACT:-1}"
 RUN_SEMANTIC="${RUN_SEMANTIC:-1}"
+RUN_PREFLIGHT="${RUN_PREFLIGHT:-1}"
+PREFLIGHT_SKIP_EMBEDDING_CONTENTS="${PREFLIGHT_SKIP_EMBEDDING_CONTENTS:-0}"
 
 SKIP_TRAIN_IF_DONE="${SKIP_TRAIN_IF_DONE:-1}"
 SKIP_EVAL_IF_DONE="${SKIP_EVAL_IF_DONE:-0}"
@@ -50,7 +56,7 @@ EVAL_MAX_MEMORY_PER_GPU="${EVAL_MAX_MEMORY_PER_GPU:-20GiB}"
 EVAL_ALL_SPLITS_FOR_ALL_CHECKPOINTS="${EVAL_ALL_SPLITS_FOR_ALL_CHECKPOINTS:-1}"
 EVAL_LIMIT="${EVAL_LIMIT:--1}"
 NO_GRAPH_TOKEN="${NO_GRAPH_TOKEN:-0}"
-CACHE_DIR="${CACHE_DIR:-../../checkpoint}"
+CACHE_DIR="${CACHE_DIR:-./checkpoints/hf_cache}"
 
 SEMANTIC_CHECKPOINTS="${SEMANTIC_CHECKPOINTS:-latest}"
 SEMANTIC_SPLITS="${SEMANTIC_SPLITS:-test}"
@@ -263,7 +269,26 @@ train_stage() {
     return 0
   fi
 
-  run_logged "${LOG_FILE}" "${TRAIN_SCRIPT}" "${MODEL}" "${TASK}" "${DATASET}" "${BATCH_SIZE}" "${EMB}"
+  run_logged "${LOG_FILE}" \
+    "${TRAIN_SCRIPT}" "${MODEL}" "${TASK}" "${DATASET}" "${BATCH_SIZE}" "${EMB}" "${DATA_DIR}"
+}
+
+preflight_stage() {
+  if [ "${RUN_PREFLIGHT}" != "1" ]; then
+    log "Skip core-data preflight because RUN_PREFLIGHT=${RUN_PREFLIGHT}."
+    return 0
+  fi
+
+  local cmd=(
+    "${PYTHON_BIN}" "${PREFLIGHT_SCRIPT}"
+    --dataset "${DATASET}"
+    --data-dir "${DATA_DIR}"
+    --embedding-type "${EMB}"
+  )
+  if [ "${PREFLIGHT_SKIP_EMBEDDING_CONTENTS}" = "1" ]; then
+    cmd+=(--skip-embedding-contents)
+  fi
+  run_logged "${LOG_FILE}" "${cmd[@]}"
 }
 
 eval_stage() {
@@ -280,6 +305,8 @@ eval_stage() {
   read -r -a eval_splits_array <<< "${EVAL_SPLITS}"
   local cmd=(
     "${PYTHON_BIN}" "eval/eval_webqsp_checkpoints.py"
+    --dataset "${DATASET}"
+    --data_dir "${DATA_DIR}"
     --output_dir "${OUTPUT_DIR}"
     --model_base "${MODEL_BASE}"
     --conv_mode "${CONV_MODE}"
@@ -335,7 +362,7 @@ extract_and_semantic_stage() {
           log "Skip extraction for ${checkpoint_name}/${split}: ${extracted_json} already exists."
         else
           run_logged "${LOG_FILE}" \
-            "${PYTHON_BIN}" "checkpoints/extract_fields_to_json.py" \
+            "${PYTHON_BIN}" "${EXTRACT_SCRIPT}" \
             "${details_jsonl}" \
             --output "${extracted_json}"
         fi
@@ -351,7 +378,7 @@ extract_and_semantic_stage() {
       fi
 
       local semantic_cmd=(
-        "${PYTHON_BIN}" "checkpoints/semantic_match_with_qwen.py"
+        "${PYTHON_BIN}" "${SEMANTIC_SCRIPT}"
         "${extracted_json}"
         --proxy-mode "${QWEN_PROXY_MODE}"
         --batch-size "${QWEN_BATCH_SIZE}"
@@ -403,9 +430,10 @@ main() {
 
   log "Output dir: ${OUTPUT_DIR}" | tee -a "${LOG_FILE}"
   log "Results dir: ${RESULTS_DIR}" | tee -a "${LOG_FILE}"
-  log "Model=${MODEL}, model_base=${MODEL_BASE}, conv_mode=${CONV_MODE}, emb=${EMB}" | tee -a "${LOG_FILE}"
+  log "Model=${MODEL}, model_base=${MODEL_BASE}, conv_mode=${CONV_MODE}, emb=${EMB}, data_dir=${DATA_DIR}" | tee -a "${LOG_FILE}"
   log "Eval splits=${EVAL_SPLITS}, semantic checkpoints=${SEMANTIC_CHECKPOINTS}, semantic splits=${SEMANTIC_SPLITS}" | tee -a "${LOG_FILE}"
 
+  preflight_stage
   train_stage
   eval_stage
   extract_and_semantic_stage

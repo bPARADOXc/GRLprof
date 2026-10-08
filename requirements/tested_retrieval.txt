@@ -1,0 +1,18 @@
+# Direct dependencies observed in retrieval and ModernBERT smoke tests.
+# Install torch==2.5.1 from the cu121 index separately; not a full lockfile.
+transformers==4.48.0
+tokenizers==0.21.0
+accelerate==0.32.1
+datasets==2.20.0
+huggingface-hub==0.36.2
+numpy==1.26.4
+networkx==3.4.2
+pandas==2.3.3
+pyarrow==23.0.1
+pydantic==2.8.2
+PyYAML==6.0.3
+tqdm==4.67.3
+wandb==0.26.1
+torch-geometric==2.7.0
+sentence-transformers==5.5.1
+packaging==26.0

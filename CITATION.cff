@@ -2,7 +2,6 @@ cff-version: 1.2.0
 message: "If you use GRLprof, please cite this repository and the upstream LLaGA and SubgraphRAG projects."
 title: "GRLprof: Structure-Aware KG-RAG with Graph Reasoning Paths and Soft Prompts"
 version: "0.1.0"
-date-released: "2026-06-10"
 authors:
   - name: "GRLprof contributors"
 license: "Apache-2.0"

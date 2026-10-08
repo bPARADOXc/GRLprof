@@ -64,7 +64,7 @@ class GraphPathEncoder(nn.Module):
            - 拼接后经 Linear(3d, d) 得到文本向量 (d,)
         3. 路径信息 token:
            - 将 [位置向量, 文本向量] 构成长度为 2 的序列
-           - 经小型 Transformer Encoder (2 层, d_model=d) 后均值池化得 (d,)
+           - 经 Transformer Encoder (8 层, d_model=d) 后均值池化得 (d,)
         4. 输出投影: 经 2 层 MLP (d -> output_dim) 得到最终 token (output_dim,)
 
     输出: Tensor(N, output_dim)

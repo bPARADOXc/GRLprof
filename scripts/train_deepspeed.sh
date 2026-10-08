@@ -18,6 +18,8 @@ master_port=${LLAGA_MASTER_PORT:-61000}
 train_entry=${LLAGA_TRAIN_ENTRY:-train/train_mem.py}
 dataloader_workers=${LLAGA_DATALOADER_NUM_WORKERS:-8}
 epochs=${LLAGA_EPOCHS:-1}
+max_steps=${LLAGA_MAX_STEPS:--1}
+max_samples_per_split=${LLAGA_MAX_SAMPLES_PER_SPLIT:--1}
 learning_rate=${LLAGA_LR:-2e-3}
 weight_decay=${LLAGA_WEIGHT_DECAY:-0.}
 warmup_ratio=${LLAGA_WARMUP_RATIO:-0.03}
@@ -33,8 +35,10 @@ explicit_output_dir=${LLAGA_OUTPUT_DIR:-}
 resume_mm_projector_from=${LLAGA_RESUME_MM_PROJECTOR_FROM:-}
 word_embed_proj_dim=${LLAGA_WORD_EMBED_PROJ_DIM:-4096}
 cache_dir=${LLAGA_CACHE_DIR:-./checkpoints/hf_cache}
+triton_cache_dir=${TRITON_CACHE_DIR:-${cache_dir%/}/triton}
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128,garbage_collection_threshold:0.9}"
+export TRITON_CACHE_DIR="${triton_cache_dir}"
 export LLAGA_MAX_GRAPH_PATHS="${LLAGA_MAX_GRAPH_PATHS:-32}"
 export LLAGA_GRAPH_PATH_BATCH="${LLAGA_GRAPH_PATH_BATCH:-32}"
 export LLAGA_GRAPH_ENCODER_CHECKPOINT="${LLAGA_GRAPH_ENCODER_CHECKPOINT:-0}"
@@ -169,13 +173,20 @@ echo "LLAGA_MAX_GRAPH_PATHS: ${LLAGA_MAX_GRAPH_PATHS}"
 echo "LLAGA_GRAPH_PATH_BATCH: ${LLAGA_GRAPH_PATH_BATCH}"
 echo "LLAGA_GRAPH_ENCODER_CHECKPOINT: ${LLAGA_GRAPH_ENCODER_CHECKPOINT}"
 echo "PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF}"
+echo "TRITON_CACHE_DIR: ${TRITON_CACHE_DIR}"
 if [ "${report_to}" = "wandb" ] && command -v wandb >/dev/null 2>&1; then
   wandb online
 fi
 
 cmd=(deepspeed)
 if [ -n "${LLAGA_DEEPSPEED_INCLUDE:-}" ]; then
+  # DeepSpeed must enumerate physical slots before applying --include.
+  cmd=(env -u CUDA_VISIBLE_DEVICES deepspeed)
   cmd+=(--include "${LLAGA_DEEPSPEED_INCLUDE}")
+elif [[ "${CUDA_VISIBLE_DEVICES:-}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+  # DeepSpeed 0.14 otherwise mistakes physical GPU2 for a nonexistent slot
+  # after torch has already reduced the visible device count to one.
+  cmd=(env -u CUDA_VISIBLE_DEVICES deepspeed --include "localhost:${CUDA_VISIBLE_DEVICES}")
 fi
 cmd+=(
   --master_port "${master_port}"
@@ -193,6 +204,8 @@ cmd+=(
   --bits "${bits}"
   --output_dir "${output_dir}"
   --num_train_epochs "${epochs}"
+  --max_steps "${max_steps}"
+  --max_samples_per_split "${max_samples_per_split}"
   --per_device_train_batch_size "${bs}"
   --per_device_eval_batch_size 1
   --gradient_accumulation_steps "${grad_accum}"
@@ -235,4 +248,5 @@ if [ "${LLAGA_DRY_RUN:-0}" = "1" ]; then
   echo "LLAGA_DRY_RUN=1, command not executed."
   exit 0
 fi
+mkdir -p "${TRITON_CACHE_DIR}"
 "${cmd[@]}"

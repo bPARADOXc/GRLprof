@@ -14,6 +14,17 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 import os
+import sys
+
+# Support both `python train/train.py` and the FlashAttention wrapper entrypoint.
+# Python otherwise places only `train/` at the front of sys.path, which makes
+# repository packages such as `utils` unavailable in the direct entrypoint.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TRAIN_DIR = os.path.dirname(os.path.abspath(__file__))
+for _path in (_REPO_ROOT, _TRAIN_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import copy
 from dataclasses import dataclass, field
 import json
@@ -341,6 +352,10 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
+    max_samples_per_split: int = field(
+        default=-1,
+        metadata={"help": "Optional sample cap per split for a short smoke run; -1 keeps all samples."},
+    )
     lazy_preprocess: bool = False
     is_multimodal: bool = False
     pretrained_embedding_type: Optional[str] = field(default='E5-base')
@@ -1437,6 +1452,8 @@ class LazySupervisedGraphDataset(Dataset):
             f"done in {_elapsed(dataset_init_start)}"
         )
         self.tokenizer = tokenizer
+        if data_args.max_samples_per_split > 0:
+            list_data_dict = list_data_dict[:data_args.max_samples_per_split]
         self.list_data_dict = list_data_dict
         self.data_args = data_args
 
@@ -2044,6 +2061,16 @@ def _train():
         rank0_print("Starting training from scratch...")
         trainer.train()
     rank0_print(f"Training finished in {_elapsed(train_start)}")
+    if data_args.max_samples_per_split > 0 and trainer.is_world_process_zero():
+        # Retain proof of optimizer steps/losses without enabling heavyweight
+        # optimizer-state checkpoints for short pipeline checks.
+        smoke_report = {
+            "global_step": trainer.state.global_step,
+            "samples_per_split_limit": data_args.max_samples_per_split,
+            "log_history": _json_safe(trainer.state.log_history),
+        }
+        with open(os.path.join(training_args.output_dir, "smoke_train_metrics.json"), "w") as handle:
+            json.dump(smoke_report, handle, indent=2)
     # 只有显式需要断点续训时，才额外保存 Trainer 的恢复状态；
     # 默认 checkpoint 仅保留模型相关文件，避免 optimizer/scheduler 等状态占用额外空间。
     if training_args.save_resume_state:
